@@ -1,7 +1,7 @@
 """
 ##################################################################################################
 # Copyright Info :    Copyright (c) Davar Lab @ Hikvision Research Institute. All rights reserved.
-# Filename       :    inference.py
+# Filename       :    run_model.py
 # Abstract       :    The common inference api for davarocr used in offline testing.
                        Support for DETECTOR, RECOGNIZOR, SPOTTER, INFO_EXTRACTOR, etc.
 
@@ -19,6 +19,7 @@ from mmcv.parallel import collate, scatter
 from mmdet.datasets.pipelines import Compose
 from mmdet.models import build_detector
 from mmdet.core import get_classes
+from mmcv.parallel.data_container import DataContainer
 
 
 def init_model(config, checkpoint=None, device='cuda:0', cfg_options=None):
@@ -103,14 +104,36 @@ def inference_model(model, imgs):
     if isinstance(imgs, dict):
         data = imgs
         data = test_pipeline(data)
-        device = int(str(device).split(":")[-1])
-        data = scatter(collate([data], samples_per_gpu=1), [device])[0]
+        if str(device) == "cpu":
+            ...
+        else:
+            device = int(str(device).split(":")[-1])
+            data = scatter(collate([data], samples_per_gpu=1), [device])[0]
     elif isinstance(imgs, (str, np.ndarray)):
         # If the input is single image
         data = dict(img=imgs)
         data = test_pipeline(data)
-        device = int(str(device).split(":")[-1])
-        data = scatter(collate([data], samples_per_gpu=1), [device])[0]
+        if str(device) == "cpu":
+            device = -1
+            img_metas_collated = [DataContainer(data=[[img_meta.data]],
+                                                stack=img_meta.stack,
+                                                padding_value=img_meta.padding_value,
+                                                cpu_only=img_meta.cpu_only,
+                                                pad_dims=img_meta.pad_dims
+                                                ) for img_meta in data["img_metas"]]
+
+            imgs_collated = [DataContainer(data=[img.data],
+                                           stack=img.stack,
+                                           padding_value=img.padding_value,
+                                           cpu_only=img.cpu_only,
+                                           pad_dims=img.pad_dims
+                                           ) for img in data["img"]]
+            data_collated = {"img_metas": img_metas_collated,
+                             "img": imgs_collated}
+        else:
+            device = int(str(device).split(":")[-1])
+            data_collated = collate([data], samples_per_gpu=1)
+        data = scatter(data_collated, [device])[0]
     else:
         # If the input are batch of images
         batch_data = []
@@ -122,8 +145,11 @@ def inference_model(model, imgs):
             data = test_pipeline(data)
             batch_data.append(data)
         data_collate = collate(batch_data, samples_per_gpu=len(batch_data))
-        device = int(str(device).rsplit(':', maxsplit=1)[-1])
-        data = scatter(data_collate, [device])[0]
+        if str(device) == "cpu":
+            ...
+        else:
+            device = int(str(device).rsplit(':', maxsplit=1)[-1])
+            data = scatter(data_collate, [device])[0]
 
     # Forward inference
     with torch.no_grad():
